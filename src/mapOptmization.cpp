@@ -17,6 +17,10 @@
 
 #include <gtsam/nonlinear/ISAM2.h>
 
+#include <novatel_msgs/INSPVAX.h>
+#include <GeographicLib/Geocentric.hpp>
+#include <GeographicLib/LocalCartesian.hpp>
+
 using namespace gtsam;
 
 using symbol_shorthand::X; // Pose3 (x,y,z,r,p,y)
@@ -83,6 +87,10 @@ public:
 
     std::deque<nav_msgs::Odometry> gpsQueue;
     lio_sam::cloud_info cloudInfo;
+
+    bool first_data = true;
+    std::unique_ptr<GeographicLib::LocalCartesian> local_proj_ = nullptr;
+    Eigen::Quaterniond q_lidar2NovaENU;
 
     vector<pcl::PointCloud<PointType>::Ptr> cornerCloudKeyFrames;
     vector<pcl::PointCloud<PointType>::Ptr> surfCloudKeyFrames;
@@ -169,6 +177,55 @@ public:
 
         subCloud = nh.subscribe<lio_sam::cloud_info>("lio_sam/feature/cloud_info", 1, &mapOptimization::laserCloudInfoHandler, this, ros::TransportHints().tcpNoDelay());
         subGPS   = nh.subscribe<nav_msgs::Odometry> (gpsTopic, 200, &mapOptimization::gpsHandler, this, ros::TransportHints().tcpNoDelay());
+        
+        std::ifstream myReadFile(trajectory_path, std::ios::in);
+        usleep(1000 * 1000);
+        char buff[2048 * 10] = {0};
+        double timestamp, week, seconds, lat,  lon, x_ecef, y_ecef, lat_S, z_ecef, height, VX_ECEF, VY_ECEF, VZ_ECEF, vel_East, vel_North, vl_Up, VelbdyX, VelbdyY, VelbdyZ, AccBdyX, AccBdyY, AccBdyZ, roll, pitch, heading, sol = 0;
+        myReadFile.getline(buff, sizeof(buff));
+        std::cout << "skip header:" << std::string(buff) << std::endl;
+        myReadFile.getline(buff, sizeof(buff));
+        std::cout << "skip header:" << std::string(buff) << std::endl;
+
+        while (myReadFile.getline(buff, sizeof(buff)))
+        {
+            std::string str(buff);
+            std::stringstream ss;
+            ss << buff;
+            ss >> timestamp;
+            ss >> week >> seconds >> lat >> lon >>  height  >> x_ecef >> y_ecef >> z_ecef >> VX_ECEF >> VY_ECEF >> VZ_ECEF >> vel_East>>
+            vel_North >> vl_Up >>VelbdyX >> VelbdyY>>VelbdyZ >> AccBdyX >> AccBdyY >> AccBdyZ >>
+                roll >> pitch >> heading >> sol;
+        
+
+            novatel_msgs::INSPVAX latest_GPS;
+            latest_GPS.header.gps_week = week;
+            latest_GPS.header.gps_week_seconds = seconds * 1000;
+            // tmp for assigin timstamp
+            latest_GPS.header.receiver_status = timestamp * 1000;
+            std::cout << "timestamp:" << timestamp << std::endl;
+            latest_GPS.latitude = lat;
+            latest_GPS.longitude = lon;
+            latest_GPS.altitude = height;
+            latest_GPS.north_velocity = vel_North;
+            latest_GPS.east_velocity = vel_East;
+            latest_GPS.up_velocity = vl_Up;
+
+            latest_GPS.roll = roll;
+            latest_GPS.pitch = pitch;
+            latest_GPS.azimuth = heading;
+            // solution type
+            latest_GPS.position_type = sol;
+            // std::cout<<"timestamp:"<<timestamp<<std::endl;
+            std::cout << "rostime" << timestamp << std::endl;
+
+            ros::Time gps_utc(timestamp);
+            NovatelToTUM(latest_GPS, timestamp);
+            if (!ros::ok())
+            {
+            break;
+            }
+        }
         subLoop  = nh.subscribe<std_msgs::Float64MultiArray>("lio_loop/loop_closure_detection", 1, &mapOptimization::loopInfoHandler, this, ros::TransportHints().tcpNoDelay());
 
         srvSaveMap  = nh.advertiseService("lio_sam/save_map", &mapOptimization::saveMapService, this);
@@ -189,6 +246,73 @@ public:
         downSizeFilterSurroundingKeyPoses.setLeafSize(surroundingKeyframeDensity, surroundingKeyframeDensity, surroundingKeyframeDensity); // for surrounding key poses of scan-to-map optimization
 
         allocateMemory();
+    }
+
+    Eigen::Quaterniond Eulerangle2Quaternion(double &fi, double &thita, double &posi)
+    {
+    Eigen::Matrix3d R;
+    R << cos(posi) * cos(fi) - sin(posi) * sin(thita) * sin(fi), -sin(posi) * cos(thita), cos(posi) * sin(fi) + sin(posi) * sin(thita) * cos(fi),
+        sin(posi) * cos(fi) + cos(posi) * sin(thita) * sin(fi), cos(posi) * cos(thita), sin(posi) * sin(fi) - cos(posi) * sin(thita) * cos(fi),
+        -cos(thita) * sin(fi), sin(thita), cos(thita) * cos(fi);
+    Eigen::Quaterniond q(R);
+    return q.normalized();
+    }
+
+    void NovatelToTUM(novatel_msgs::INSPVAX latest_INSPVAX, double ros_time)
+    {
+        double latest_enu_x, latest_enu_y, latest_enu_z;
+
+        double yaw = -latest_INSPVAX.azimuth * M_PI / 180;
+        // span pitch and roll is not the same difination of ROS
+        double roll = latest_INSPVAX.roll * M_PI / 180;
+        double pitch = latest_INSPVAX.pitch * M_PI / 180;
+        if (first_data)
+        {
+            local_proj_ = std::make_unique<GeographicLib::LocalCartesian>(latest_INSPVAX.latitude, latest_INSPVAX.longitude,
+                                                                        latest_INSPVAX.altitude);
+            first_data = false;
+            //  assume the SPAN IMU body and LiDAR, xsense are align well in the body frame. y-axis forward and x-axis right
+            //  The origin is Identity matrix
+            //rotation from Novatel statr ENU frame to lidar start local frame
+            q_lidar2NovaENU = Eulerangle2Quaternion(roll, pitch, yaw).inverse().normalized();
+        }
+
+        local_proj_->Forward(latest_INSPVAX.latitude, latest_INSPVAX.longitude, latest_INSPVAX.altitude, latest_enu_x, latest_enu_y,
+                            latest_enu_z);
+        // convert to ROS standard, here we only consider the yaw offset, tangent plane. If the roll and pitch is large we need to consider that
+        //  q_lidar2NovaENU = Eulerangle2Quaternion(roll, pitch, yaw).inverse().normalized();
+        Eigen::Vector3d latest_enu_t(latest_enu_x, latest_enu_y, latest_enu_z);
+        Eigen::Vector3d latest_lidarlocal_t = q_lidar2NovaENU * latest_enu_t;
+
+        double transform_x = latest_lidarlocal_t.x();
+        double transform_y = latest_lidarlocal_t.y();
+        double transform_z = latest_lidarlocal_t.z();
+
+        Eigen::Quaterniond latest_enu_q = Eulerangle2Quaternion(roll, pitch, yaw);
+
+        Eigen::Quaterniond q = (q_lidar2NovaENU * latest_enu_q).normalized();
+
+        //  q = tf::createQuaternionMsgFromRollPitchYaw(roll, pitch, yaw);
+        std::cout << "gps roll pitch yaw:" << roll << " " << pitch << " " << yaw << std::endl;
+        // to tum
+        std::cout << std::setprecision(20) << ros_time << " " << transform_x << " " << transform_y << " "
+                    << transform_z << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << std::endl;
+
+        nav_msgs::Odometry gps_data;
+        gps_data.header.frame_id = "map";
+
+        gps_data.header.stamp = ros::Time(ros_time);
+        gps_data.pose.pose.position.x = transform_x;
+        gps_data.pose.pose.position.y = transform_y;
+        gps_data.pose.pose.position.z = transform_z;
+        gps_data.pose.pose.orientation.x = q.x();
+        gps_data.pose.pose.orientation.y = q.y();
+        gps_data.pose.pose.orientation.z = q.z();
+        gps_data.pose.pose.orientation.w = q.w();
+
+        // usleep(100*1000);
+        // pubGPS.publish(gps_data);
+        gpsQueue.emplace_back(gps_data);
     }
 
     void allocateMemory()

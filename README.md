@@ -1,17 +1,13 @@
-# LIO-SAM
+# LIO-SAM incorporating SPAN-CPT data interface
 
-**A real-time lidar-inertial odometry package. We strongly recommend the users read this document thoroughly and test the package with the provided dataset first. A video of the demonstration of the method can be found on [YouTube](https://www.youtube.com/watch?v=A0H8CoORZJU).**
+### This library provides a GNSS/INS data interface for the SPAN-CPT family as a GPS data input to the [LIO-SAM](https://github.com/TixiaoShan/LIO-SAM). One example of SPAN-CPT6 data is shown below:
 
-<p align='center'>
-    <img src="./config/doc/demo.gif" alt="drawing" width="800"/>
-</p>
+<div style="overflow-x: auto; white-space: nowrap; font-family: monospace;">
 
-<p align='center'>
-    <img src="./config/doc/device-hand-2.png" alt="drawing" width="200"/>
-    <img src="./config/doc/device-hand.png" alt="drawing" width="200"/>
-    <img src="./config/doc/device-jackal.png" alt="drawing" width="200"/>
-    <img src="./config/doc/device-livox-horizon.png" alt="drawing" width="200"/>
-</p>
+UTCTime       Week    GPSTime       Latitude      Longitude        H-Ell       X-ECEF       Y-ECEF       Z-ECEF   VX-ECEF   VY-ECEF   VZ-ECEF     VEast    VNorth       VUp VelBdyX VelBdyY VelBdyZ AccBdyX AccBdyY AccBdyZ           Roll          Pitch        Heading Q     SDX-ECEF     SDY-ECEF     SDZ-ECEF       SDEast      SDNorth     SDHeight         HdngSD     SD-VN     SD-VE     SD-VH         RollSD        PitchSD        AzStDev
+
+</div>
+
 
 ## Menu
 
